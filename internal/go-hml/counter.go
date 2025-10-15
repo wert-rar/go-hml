@@ -33,13 +33,19 @@ func WalkDirectory(path string) (map[string]ExtResult, error) {
 		if d.IsDir() {
 			return nil
 		} else {
+			name := d.Name()
+			var ext string
+			if strings.Contains(name, ".") {
+				ext = strings.Split(name, ".")[1]
+			} else {
+				return nil
+			}
 
 			result, err := ParseFile(path)
 			if err != nil {
 				log.Fatal(err)
 			}
-			name := d.Name()
-			ext := strings.Split(name, ".")[1]
+
 			extResult, ok := results[ext]
 			if !ok {
 				extResult = ExtResult{}
