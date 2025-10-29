@@ -7,8 +7,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"slices"
+	"runtime"
 	"strings"
+	"sync"
 )
 
 type FileResult struct {
@@ -23,9 +24,23 @@ type ExtResult struct {
 	CommLines int
 }
 
+type resItem struct {
+	ext string
+	fr  FileResult
+}
+
 var ignoreList []string
 var extensions []string
 var commentsList []string
+
+func contains(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
 
 func parseCommaSeparatedList(list string) []string {
 	if list == "" {
@@ -50,19 +65,21 @@ func SetCommentsList(list string) {
 	commentsList = parseCommaSeparatedList(list)
 }
 
-// walks in dir
-func WalkDirectory(path string) (map[string]ExtResult, error) {
-	results := make(map[string]ExtResult)
+func WalkDirectory(root string) (map[string]ExtResult, error) {
 
-	err := filepath.WalkDir(path, func(path string, d fs.DirEntry, err error) error {
+	var files []string
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			log.Println("Error accessing path:", path, "error:", err)
 			return err
 		}
 
 		// ignore list check
-		if slices.Contains(ignoreList, d.Name()) {
-			return filepath.SkipDir
+		if contains(ignoreList, d.Name()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 
 		if d.IsDir() {
@@ -76,25 +93,73 @@ func WalkDirectory(path string) (map[string]ExtResult, error) {
 			return nil
 		}
 		// extension filter check
-		if len(extensions) > 0 && !slices.Contains(extensions, ext) {
+		if len(extensions) > 0 && !contains(extensions, ext) {
 			return nil
 		}
 
-		result, err := ParseFile(path)
-		if err != nil {
-			return err
-		}
-
-		er := results[ext]
-		er.Files++
-		er.CodeLines += result.CodeLines
-		er.CommLines += result.CommLines
-		results[ext] = er
-
+		files = append(files, path)
 		return nil
 	})
 
-	return results, err
+	if err != nil {
+		return nil, err
+	}
+
+	workerCount := max(runtime.NumCPU(), 1)
+
+	jobs := make(chan string, len(files))
+	resultsCh := make(chan resItem, len(files))
+	errCh := make(chan error, 1)
+
+	var wg sync.WaitGroup
+
+	// Workers get files from jobs channel
+	for i := 0; i < workerCount; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for p := range jobs {
+				fr, perr := ParseFile(p)
+				if perr != nil {
+					select {
+					case errCh <- perr:
+					default:
+					}
+					return
+				}
+				ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(p), "."))
+				resultsCh <- resItem{ext: ext, fr: fr}
+			}
+		}()
+	}
+
+	// Add files to jobs channel
+	for _, f := range files {
+		jobs <- f
+	}
+	close(jobs)
+
+	go func() {
+		wg.Wait()
+		close(resultsCh)
+	}()
+
+	// Results aggregation
+	results := make(map[string]ExtResult)
+	for r := range resultsCh {
+		er := results[r.ext]
+		er.Files++
+		er.CodeLines += r.fr.CodeLines
+		er.CommLines += r.fr.CommLines
+		results[r.ext] = er
+	}
+
+	select {
+	case e := <-errCh:
+		return results, e
+	default:
+		return results, nil
+	}
 }
 
 func ParseFile(name string) (FileResult, error) {
@@ -134,26 +199,20 @@ func ParseFile(name string) (FileResult, error) {
 		} else {
 			result.CodeLines++
 		}
-
 	}
 	if err := scanner.Err(); err != nil {
 		return FileResult{}, err
 	}
 
 	return result, nil
-
 }
 
 func PrintResults(results map[string]ExtResult) {
-	fmt.Println("RESULTS:")
-
+	fmt.Println("Results:")
 	for ext, result := range results {
-		fmt.Printf("\t%s :  Files: %d  Code %d lines  Comments %d lines",
+		fmt.Printf("-\t[%s] :  Files: %d  Code %d lines  Comments %d lines\n",
 			ext, result.Files, result.CodeLines, result.CommLines)
-		fmt.Println()
-
 	}
-
 }
 
 func PrintQuiet(results map[string]ExtResult) {
@@ -164,5 +223,4 @@ func PrintQuiet(results map[string]ExtResult) {
 		totalComm += result.CommLines
 	}
 	fmt.Printf("%d (code: %d comments: %d)\n", totalCode+totalComm, totalCode, totalComm)
-
 }
