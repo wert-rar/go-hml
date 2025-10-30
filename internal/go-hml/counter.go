@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -28,6 +30,11 @@ type resItem struct {
 	ext string
 	fr  FileResult
 }
+
+const (
+	ansiCyan  = "\x1b[36m"
+	ansiReset = "\x1b[0m"
+)
 
 var ignoreList []string
 var extensions []string
@@ -208,11 +215,93 @@ func ParseFile(name string) (FileResult, error) {
 }
 
 func PrintResults(results map[string]ExtResult) {
-	fmt.Println("Results:")
-	for ext, result := range results {
-		fmt.Printf("-\t[%s] :  Files: %d  Code %d lines  Comments %d lines\n",
-			ext, result.Files, result.CodeLines, result.CommLines)
+	if len(results) == 0 {
+		fmt.Println("No results")
+		return
 	}
+
+	// Sorts the extensions
+	exts := make([]string, 0, len(results))
+	for k := range results {
+		exts = append(exts, k)
+	}
+	sort.Strings(exts)
+
+	// Headers
+	hExt := "Extension"
+	hFiles := "Files"
+	hCode := "Code"
+	hComm := "Comments"
+
+	// Calculate column widths
+	extW := len(hExt)
+	filesW := len(hFiles)
+	codeW := len(hCode)
+	commW := len(hComm)
+
+	for _, e := range exts {
+
+		r := results[e]
+		extW = max(len(e), extW)
+		filesW = max(len(strconv.Itoa(r.Files)), filesW)
+		codeW = max(len(strconv.Itoa(r.CodeLines)), codeW)
+		commW = max(len(strconv.Itoa(r.CommLines)), commW)
+	}
+
+	// Make widths even (if odd, add 1)
+	extW += 2 + extW%2
+	filesW += 2 + filesW%2
+	codeW += 2 + codeW%2
+	commW += 2 + commW%2
+
+	repeat := func(s string, count int) string {
+		return strings.Repeat(s, count)
+	}
+	pad := func(s string, width int) string {
+		if len(s) >= width {
+			return s
+		}
+		spaces := width - len(s)
+		leftPad := spaces / 2
+		rightPad := spaces - leftPad
+		return repeat(" ", leftPad) + s + repeat(" ", rightPad)
+	}
+
+	useColor := os.Getenv("NO_COLOR") == ""
+	colorize := func(s string) string {
+		if !useColor {
+			return s
+		}
+		return ansiCyan + s + ansiReset
+	}
+
+	hLine := "+" + repeat("-", extW) + "+" + repeat("-", filesW) + "+" + repeat("-", codeW) + "+" + repeat("-", commW) + "+"
+	fmt.Println(hLine)
+	fmt.Printf("|%s|%s|%s|%s|\n", pad(hExt, extW), pad(hFiles, filesW), pad(hCode, codeW), pad(hComm, commW))
+
+	fmt.Println(hLine)
+
+	totalFiles := 0
+	totalCode := 0
+	totalComm := 0
+
+	for _, e := range exts {
+		r := results[e]
+
+		totalFiles += r.Files
+		totalCode += r.CodeLines
+		totalComm += r.CommLines
+
+		extCell := colorize(e) + repeat(" ", extW-len(e))
+		filesCell := pad(strconv.Itoa(r.Files), filesW)
+		codeCell := pad(strconv.Itoa(r.CodeLines), codeW)
+		commCell := pad(strconv.Itoa(r.CommLines), commW)
+
+		fmt.Printf("|%s|%s|%s|%s|\n", extCell, filesCell, codeCell, commCell)
+	}
+
+	fmt.Println(hLine)
+	fmt.Printf("Total: Files=%d  Code=%d  Comments=%d\n", totalFiles, totalCode, totalComm)
 }
 
 func PrintQuiet(results map[string]ExtResult) {
