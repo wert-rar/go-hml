@@ -177,6 +177,7 @@ func ParseFile(name string) (FileResult, error) {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
+	scanner.Buffer(buf, 1024*1024)
 	result := FileResult{}
 
 	for scanner.Scan() {
